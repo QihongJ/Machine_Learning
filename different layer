@@ -1,0 +1,188 @@
+import torch  
+import torch.nn as nn  
+import torch.nn.functional as F  
+import numpy as np  
+import matplotlib.pyplot as plt  
+from torch.utils.data import DataLoader, TensorDataset  
+from scipy.stats import norm  
+from mpl_toolkits.mplot3d import Axes3D  
+
+class OptionPricingNet(nn.Module):  
+    def __init__(self, n_hidden_layers=1):  
+        super(OptionPricingNet, self).__init__()  
+        self.layers = nn.ModuleList()  
+        
+        # 输入层到第一个隐藏层  
+        self.layers.append(nn.Linear(2, 32))  
+        self.batch_norms = nn.ModuleList([nn.BatchNorm1d(32)])  
+        
+        # 添加中间隐藏层  
+        for _ in range(n_hidden_layers - 1):  
+            self.layers.append(nn.Linear(32, 32))  
+            self.batch_norms.append(nn.BatchNorm1d(32))  
+        
+        # 输出层  
+        self.layers.append(nn.Linear(32, 1))  
+        
+    def forward(self, x):  
+        for i in range(len(self.layers) - 1):  
+            x = self.layers[i](x)  
+            x = self.batch_norms[i](x)  
+            x = F.relu(x)  
+        x = self.layers[-1](x)  
+        return x  
+
+def custom_loss(pred, target, model, l1_lambda=0.01):  
+    mse = F.mse_loss(pred, target)  
+    l1_norm = sum(p.abs().sum() for p in model.parameters())  
+    return mse + l1_lambda * l1_norm  
+
+def generate_option_data(n_samples=1000):  
+    S = np.random.uniform(80, 120, n_samples)  
+    t = np.random.uniform(0.1, 1, n_samples)  
+    K = 100  
+    r = 0.05  
+    sigma = 0.2  
+    
+    d1 = (np.log(S/K) + (r + 0.5*sigma**2)*t) / (sigma*np.sqrt(t))  
+    d2 = d1 - sigma*np.sqrt(t)  
+    
+    V = S*norm.cdf(d1) - K*np.exp(-r*t)*norm.cdf(d2)  
+    
+    X = torch.FloatTensor(np.column_stack((S, t)))  
+    y = torch.FloatTensor(V).reshape(-1, 1)  
+    
+    return X, y  
+
+def train_model(model, X, y, epochs=1000, batch_size=32):  
+    optimizer = torch.optim.Adam(model.parameters(), lr=0.01)  
+    dataset = TensorDataset(X, y)  
+    dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=True)  
+    
+    losses = []  
+    
+    for epoch in range(epochs):  
+        epoch_loss = 0  
+        for batch_X, batch_y in dataloader:  
+            optimizer.zero_grad()  
+            outputs = model(batch_X)  
+            loss = custom_loss(outputs, batch_y, model)  
+            loss.backward()  
+            optimizer.step()  
+            epoch_loss += loss.item()  
+            
+        epoch_loss /= len(dataloader)  
+        losses.append(epoch_loss)  
+        
+        if (epoch + 1) % 100 == 0:  
+            print(f'Epoch [{epoch+1}/{epochs}], Loss: {epoch_loss:.6f}')  
+    
+    return losses  
+
+def plot_3d_surface(model, title):  
+    with torch.no_grad():  
+        # 创建网格点  
+        S = np.linspace(80, 120, 50)  
+        t = np.linspace(0.1, 1, 50)  
+        S_grid, t_grid = np.meshgrid(S, t)  
+        
+        X_test = torch.FloatTensor(np.column_stack((S_grid.flatten(), t_grid.flatten())))  
+        predictions = model(X_test).numpy().reshape(50, 50)  
+        
+        fig = plt.figure(figsize=(10, 7))  
+        ax = fig.add_subplot(111, projection='3d')  
+        surf = ax.plot_surface(S_grid, t_grid, predictions, cmap='viridis')  
+        ax.set_xlabel('Stock Price')  
+        ax.set_ylabel('Time to Maturity')  
+        ax.set_zlabel('Option Price')  
+        plt.colorbar(surf)  
+        plt.title(title)  
+        plt.tight_layout()  
+        return fig  
+
+def compare_models():  
+    # 设置随机种子  
+    torch.manual_seed(42)  
+    np.random.seed(42)  
+    
+    # 生成数据  
+    X, y = generate_option_data(n_samples=2000)  
+    
+    # 创建不同隐藏层数量的模型  
+    n_hidden_layers = [1, 2, 3, 4]  
+    all_losses = []  
+    models = []  
+    
+    # 训练所有模型  
+    for n_layers in n_hidden_layers:  
+        print(f"\nTraining model with {n_layers} hidden layers...")  
+        model = OptionPricingNet(n_hidden_layers=n_layers)  
+        losses = train_model(model, X, y)  
+        all_losses.append(losses)  
+        models.append(model)  
+    
+    # 绘制损失对比图  
+    plt.figure(figsize=(12, 6))  
+    for i, losses in enumerate(all_losses):  
+        plt.plot(losses, label=f'{n_hidden_layers[i]} Hidden Layers')  
+    plt.xlabel('Epoch')  
+    plt.ylabel('Loss')  
+    plt.title('Training Loss Comparison')  
+    plt.legend()  
+    plt.grid(True)  
+    plt.show()  
+    
+    # 绘制3D表面图  
+    fig = plt.figure(figsize=(20, 15))  
+    for i, model in enumerate(models):  
+        ax = fig.add_subplot(2, 2, i+1, projection='3d')  
+        
+        S = np.linspace(80, 120, 50)  
+        t = np.linspace(0.1, 1, 50)  
+        S_grid, t_grid = np.meshgrid(S, t)  
+        
+        X_test = torch.FloatTensor(np.column_stack((S_grid.flatten(), t_grid.flatten())))  
+        with torch.no_grad():  
+            predictions = model(X_test).numpy().reshape(50, 50)  
+        
+        surf = ax.plot_surface(S_grid, t_grid, predictions, cmap='viridis')  
+        ax.set_xlabel('Stock Price')  
+        ax.set_ylabel('Time to Maturity')  
+        ax.set_zlabel('Option Price')  
+        plt.colorbar(surf, ax=ax)  
+        ax.set_title(f'{n_hidden_layers[i]} Hidden Layers')  
+    
+    plt.tight_layout()  
+    plt.show()  
+    
+    # 评估模型性能  
+    test_S = torch.linspace(80, 120, 100).reshape(-1, 1)  
+    test_t = torch.ones_like(test_S) * 0.5  
+    test_X = torch.cat((test_S, test_t), dim=1)  
+    
+    plt.figure(figsize=(12, 6))  
+    for i, model in enumerate(models):  
+        with torch.no_grad():  
+            predicted_prices = model(test_X)  
+        plt.plot(test_S.numpy(), predicted_prices.numpy(), label=f'{n_hidden_layers[i]} Hidden Layers')  
+    
+    # 计算实际Black-Scholes价格  
+    K = 100  
+    r = 0.05  
+    sigma = 0.2  
+    t = 0.5  
+    S_np = test_S.numpy()  
+    d1 = (np.log(S_np/K) + (r + 0.5*sigma**2)*t) / (sigma*np.sqrt(t))  
+    d2 = d1 - sigma*np.sqrt(t)  
+    actual_prices = S_np*norm.cdf(d1) - K*np.exp(-r*t)*norm.cdf(d2)  
+    
+    plt.plot(S_np, actual_prices, '--', label='Black-Scholes', color='black')  
+    plt.xlabel('Stock Price')  
+    plt.ylabel('Option Price')  
+    plt.title('Option Price vs Stock Price (t=0.5)')  
+    plt.legend()  
+    plt.grid(True)  
+    plt.show()  
+
+if __name__ == "__main__":  
+    compare_models()
