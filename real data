@@ -3,16 +3,13 @@ import torch.nn as nn
 import torch.nn.functional as F  
 import numpy as np  
 import matplotlib.pyplot as plt  
-import pandas as pd  
-import yfinance as yf  
-from sklearn.model_selection import train_test_split  
+from sklearn.model_selection import KFold  
 from sklearn.preprocessing import StandardScaler  
 
 class OptionPricingNet(nn.Module):  
     def __init__(self, hidden_size=16):  
         super().__init__()  
-        # 三层隐藏层  
-        self.layer1 = nn.Linear(5, hidden_size)  # 输入特征增加  
+        self.layer1 = nn.Linear(5, hidden_size)  
         self.bn1 = nn.BatchNorm1d(hidden_size)  
         self.layer2 = nn.Linear(hidden_size, hidden_size)  
         self.bn2 = nn.BatchNorm1d(hidden_size)  
@@ -20,8 +17,8 @@ class OptionPricingNet(nn.Module):
         self.bn3 = nn.BatchNorm1d(hidden_size)  
         self.output = nn.Linear(hidden_size, 1)  
         
-        # Dropout层用于防止过拟合  
-        self.dropout = nn.Dropout(0.2)  
+        # 减小dropout率  
+        self.dropout = nn.Dropout(0.1)  
         
     def forward(self, x):  
         x = F.relu(self.bn1(self.layer1(x)))  
@@ -32,178 +29,151 @@ class OptionPricingNet(nn.Module):
         x = self.dropout(x)  
         return self.output(x)  
 
-def get_real_option_data():  
-    """  
-    获取实际的期权数据  
-    这里使用SPY（S&P 500 ETF）的期权数据作为示例  
-    """  
-    # 获取SPY的历史数据用于计算波动率  
-    spy = yf.download('SPY', start='2023-01-01', end='2024-01-01')  
+def generate_synthetic_data(n_samples=1000):  
+    """生成更真实的合成数据"""  
+    np.random.seed(42)  
     
-    # 计算历史波动率  
-    returns = np.log(spy['Close'] / spy['Close'].shift(1))  
-    historical_volatility = returns.std() * np.sqrt(252)  
+    # 基础参数  
+    S = np.random.uniform(80, 120, n_samples)  # 股票价格  
+    K = np.random.uniform(90, 110, n_samples)  # 行权价  
+    T = np.random.uniform(0.1, 1.0, n_samples)  # 到期时间  
+    r = 0.05 * np.ones(n_samples)  # 无风险利率  
+    sigma = 0.2 * np.ones(n_samples)  # 波动率  
     
-    # 获取当前SPY期权链  
-    spy_ticker = yf.Ticker('SPY')  
-    options = spy_ticker.options  
+    # 计算BS价格  
+    d1 = (np.log(S/K) + (r + 0.5*sigma**2)*T) / (sigma*np.sqrt(T))  
+    d2 = d1 - sigma*np.sqrt(T)  
     
-    all_options_data = []  
-    for date in options[:3]:  # 只取最近的几个到期日  
-        opt = spy_ticker.option_chain(date)  
-        calls = opt.calls  
-        
-        # 计算到期时间（年）  
-        expiry = pd.to_datetime(date)  
-        today = pd.Timestamp.now()  
-        T = (expiry - today).days / 365  
-        
-        # 提取需要的数据  
-        for _, row in calls.iterrows():  
-            if row['volume'] > 0:  # 只选择有交易量的期权  
-                all_options_data.append({  
-                    'Stock_Price': spy['Close'].iloc[-1],  
-                    'Strike_Price': row['strike'],  
-                    'Time_To_Maturity': T,  
-                    'Volatility': historical_volatility,  
-                    'Risk_Free_Rate': 0.05,  # 假设无风险利率  
-                    'Option_Price': row['lastPrice']  
-                })  
+    # 添加随机噪声  
+    noise = np.random.normal(0, 0.1, n_samples)  
+    V = S*norm.cdf(d1) - K*np.exp(-r*T)*norm.cdf(d2) + noise  
     
-    # 转换为DataFrame  
-    df = pd.DataFrame(all_options_data)  
-    return df  
+    # 组合特征  
+    X = np.column_stack((S, K, T, r, sigma))  
+    y = V.reshape(-1, 1)  
+    
+    return X, y  
 
-def prepare_data(df):  
-    """数据预处理"""  
-    # 特征和目标变量  
-    X = df[['Stock_Price', 'Strike_Price', 'Time_To_Maturity',   
-            'Volatility', 'Risk_Free_Rate']].values  
-    y = df['Option_Price'].values.reshape(-1, 1)  
+def k_fold_cross_validation(X, y, k=5, epochs=500, batch_size=128, lr=0.001):  
+    """实现K折交叉验证"""  
+    kf = KFold(n_splits=k, shuffle=True, random_state=42)  
+    fold_results = []  
     
-    # 数据标准化  
-    scaler_X = StandardScaler()  
-    scaler_y = StandardScaler()  
+    for fold, (train_idx, val_idx) in enumerate(kf.split(X)):  
+        print(f"\nFold {fold+1}/{k}")  
+        
+        # 数据准备  
+        X_train, X_val = X[train_idx], X[val_idx]  
+        y_train, y_val = y[train_idx], y[val_idx]  
+        
+        # 标准化  
+        scaler_X = StandardScaler()  
+        scaler_y = StandardScaler()  
+        
+        X_train = scaler_X.fit_transform(X_train)  
+        X_val = scaler_X.transform(X_val)  
+        y_train = scaler_y.fit_transform(y_train)  
+        y_val = scaler_y.transform(y_val)  
+        
+        # 转换为tensor  
+        X_train = torch.FloatTensor(X_train)  
+        y_train = torch.FloatTensor(y_train)  
+        X_val = torch.FloatTensor(X_val)  
+        y_val = torch.FloatTensor(y_val)  
+        
+        # 创建模型  
+        model = OptionPricingNet()  
+        optimizer = torch.optim.Adam(model.parameters(), lr=lr)  
+        criterion = nn.MSELoss()  
+        
+        # 创建数据加载器  
+        train_loader = torch.utils.data.DataLoader(  
+            torch.utils.data.TensorDataset(X_train, y_train),  
+            batch_size=batch_size, shuffle=True  
+        )  
+        
+        train_losses = []  
+        val_losses = []  
+        
+        for epoch in range(epochs):  
+            # 训练  
+            model.train()  
+            train_loss = 0  
+            for batch_X, batch_y in train_loader:  
+                optimizer.zero_grad()  
+                output = model(batch_X)  
+                loss = criterion(output, batch_y)  
+                loss.backward()  
+                optimizer.step()  
+                train_loss += loss.item()  
+            
+            train_loss /= len(train_loader)  
+            
+            # 验证  
+            model.eval()  
+            with torch.no_grad():  
+                val_output = model(X_val)  
+                val_loss = criterion(val_output, y_val).item()  
+            
+            train_losses.append(train_loss)  
+            val_losses.append(val_loss)  
+            
+            if (epoch + 1) % 100 == 0:  
+                print(f'Epoch [{epoch+1}/{epochs}], Train Loss: {train_loss:.6f}, Val Loss: {val_loss:.6f}')  
+        
+        fold_results.append({  
+            'train_losses': train_losses,  
+            'val_losses': val_losses,  
+            'final_train_loss': train_losses[-1],  
+            'final_val_loss': val_losses[-1]  
+        })  
     
-    X = scaler_X.fit_transform(X)  
-    y = scaler_y.fit_transform(y)  
-    
-    # 分割训练集和测试集  
-    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)  
-    
-    return (torch.FloatTensor(X_train), torch.FloatTensor(y_train),  
-            torch.FloatTensor(X_test), torch.FloatTensor(y_test),  
-            scaler_X, scaler_y)  
+    return fold_results  
 
-def train_model(model, X_train, y_train, X_test, y_test, epochs=500, batch_size=128, lr=0.001):  
-    """训练模型并记录损失"""  
-    train_loader = torch.utils.data.DataLoader(  
-        torch.utils.data.TensorDataset(X_train, y_train),  
-        batch_size=batch_size, shuffle=True  
-    )  
-    
-    optimizer = torch.optim.Adam(model.parameters(), lr=lr)  
-    criterion = nn.MSELoss()  
-    
-    train_losses = []  
-    test_losses = []  
-    
-    for epoch in range(epochs):  
-        # 训练模式  
-        model.train()  
-        train_loss = 0  
-        for batch_X, batch_y in train_loader:  
-            optimizer.zero_grad()  
-            output = model(batch_X)  
-            loss = criterion(output, batch_y)  
-            loss.backward()  
-            optimizer.step()  
-            train_loss += loss.item()  
-        
-        train_loss /= len(train_loader)  
-        
-        # 评估模式  
-        model.eval()  
-        with torch.no_grad():  
-            test_output = model(X_test)  
-            test_loss = criterion(test_output, y_test).item()  
-        
-        train_losses.append(train_loss)  
-        test_losses.append(test_loss)  
-        
-        if (epoch + 1) % 50 == 0:  
-            print(f'Epoch [{epoch+1}/{epochs}], Train Loss: {train_loss:.6f}, Test Loss: {test_loss:.6f}')  
-    
-    return train_losses, test_losses  
-
-def plot_results(train_losses, test_losses, model, X_test, y_test, scaler_y):  
-    """绘制结果"""  
-    # 绘制损失曲线  
-    plt.figure(figsize=(15, 5))  
+def plot_k_fold_results(fold_results):  
+    """绘制K折交叉验证结果"""  
+    plt.figure(figsize=(15, 10))  
     
     # 损失曲线  
-    plt.subplot(1, 2, 1)  
-    plt.plot(train_losses, label='Training Loss')  
-    plt.plot(test_losses, label='Testing Loss')  
+    plt.subplot(2, 1, 1)  
+    for i, result in enumerate(fold_results):  
+        plt.plot(result['train_losses'], label=f'Fold {i+1} Train')  
+        plt.plot(result['val_losses'], '--', label=f'Fold {i+1} Val')  
     plt.xlabel('Epoch')  
     plt.ylabel('Loss')  
-    plt.title('Training and Testing Loss')  
+    plt.title('Training and Validation Losses Across Folds')  
     plt.legend()  
     plt.grid(True)  
     
-    # 预测vs实际值  
-    plt.subplot(1, 2, 2)  
-    model.eval()  
-    with torch.no_grad():  
-        predicted = model(X_test)  
+    # 最终损失对比  
+    plt.subplot(2, 1, 2)  
+    train_losses = [r['final_train_loss'] for r in fold_results]  
+    val_losses = [r['final_val_loss'] for r in fold_results]  
     
-    # 转换回原始规模  
-    predicted = scaler_y.inverse_transform(predicted.numpy())  
-    actual = scaler_y.inverse_transform(y_test.numpy())  
-    
-    plt.scatter(actual, predicted, alpha=0.5)  
-    plt.plot([actual.min(), actual.max()], [actual.min(), actual.max()], 'r--', lw=2)  
-    plt.xlabel('Actual Option Price')  
-    plt.ylabel('Predicted Option Price')  
-    plt.title('Prediction vs Actual')  
+    plt.boxplot([train_losses, val_losses], labels=['Train Loss', 'Val Loss'])  
+    plt.title('Final Loss Distribution Across Folds')  
     plt.grid(True)  
     
     plt.tight_layout()  
     plt.show()  
+    
+    # 打印统计信息  
+    print("\nLoss Statistics:")  
+    print(f"Train Loss: mean={np.mean(train_losses):.6f}, std={np.std(train_losses):.6f}")  
+    print(f"Val Loss: mean={np.mean(val_losses):.6f}, std={np.std(val_losses):.6f}")  
 
 def main():  
-    # 设置随机种子  
-    torch.manual_seed(42)  
-    np.random.seed(42)  
+    # 生成数据  
+    print("Generating data...")  
+    X, y = generate_synthetic_data(n_samples=2000)  
     
-    # 获取数据  
-    print("获取期权数据...")  
-    df = get_real_option_data()  
-    
-    # 准备数据  
-    print("准备数据...")  
-    X_train, y_train, X_test, y_test, scaler_X, scaler_y = prepare_data(df)  
-    
-    # 创建模型  
-    print("创建模型...")  
-    model = OptionPricingNet(hidden_size=16)  
-    
-    # 训练模型  
-    print("开始训练...")  
-    train_losses, test_losses = train_model(  
-        model, X_train, y_train, X_test, y_test,  
-        epochs=500, batch_size=128, lr=0.001  
-    )  
+    # 进行k折交叉验证  
+    print("Starting k-fold cross validation...")  
+    fold_results = k_fold_cross_validation(X, y, k=5)  
     
     # 绘制结果  
-    print("绘制结果...")  
-    plot_results(train_losses, test_losses, model, X_test, y_test, scaler_y)  
-    
-    # 计算最终的训练和测试误差  
-    final_train_loss = train_losses[-1]  
-    final_test_loss = test_losses[-1]  
-    print(f"\n最终训练损失: {final_train_loss:.6f}")  
-    print(f"最终测试损失: {final_test_loss:.6f}")  
+    print("Plotting results...")  
+    plot_k_fold_results(fold_results)  
 
 if __name__ == "__main__":  
     main()
