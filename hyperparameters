@@ -1,0 +1,157 @@
+import torch  
+import torch.nn as nn  
+import torch.nn.functional as F  
+import numpy as np  
+import matplotlib.pyplot as plt  
+from torch.utils.data import DataLoader, TensorDataset  
+from scipy.stats import norm  
+import itertools  
+
+class OptionPricingNet(nn.Module):  
+    def __init__(self, hidden_size):  
+        super().__init__()  
+        self.layer1 = nn.Linear(2, hidden_size)  
+        self.bn1 = nn.BatchNorm1d(hidden_size)  
+        self.layer2 = nn.Linear(hidden_size, hidden_size)  
+        self.bn2 = nn.BatchNorm1d(hidden_size)  
+        self.layer3 = nn.Linear(hidden_size, 1)  
+        
+    def forward(self, x):  
+        x = F.relu(self.bn1(self.layer1(x)))  
+        x = F.relu(self.bn2(self.layer2(x)))  
+        return self.layer3(x)  
+
+def generate_option_data(n_samples=1000):  
+    S = np.random.uniform(80, 120, n_samples)  
+    t = np.random.uniform(0.1, 1, n_samples)  
+    K = 100  
+    r = 0.05  
+    sigma = 0.2  
+    
+    d1 = (np.log(S/K) + (r + 0.5*sigma**2)*t) / (sigma*np.sqrt(t))  
+    d2 = d1 - sigma*np.sqrt(t)  
+    
+    V = S*norm.cdf(d1) - K*np.exp(-r*t)*norm.cdf(d2)  
+    
+    X = torch.FloatTensor(np.column_stack((S, t)))  
+    y = torch.FloatTensor(V).reshape(-1, 1)  
+    
+    return X, y  
+
+def calculate_bs_price(S, t, K=100, r=0.05, sigma=0.2):  
+    d1 = (np.log(S/K) + (r + 0.5*sigma**2)*t) / (sigma*np.sqrt(t))  
+    d2 = d1 - sigma*np.sqrt(t)  
+    return S*norm.cdf(d1) - K*np.exp(-r*t)*norm.cdf(d2)  
+
+def train_and_evaluate(hidden_size, n_samples, batch_size, epochs, learning_rate):  
+    # 生成数据  
+    X, y = generate_option_data(n_samples)  
+    
+    # 创建模型  
+    model = OptionPricingNet(hidden_size)  
+    optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)  
+    criterion = nn.MSELoss()  
+    
+    # 创建数据加载器  
+    dataset = TensorDataset(X, y)  
+    dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=True)  
+    
+    # 训练过程中的损失记录  
+    train_losses = []  
+    
+    # 训练模型  
+    for epoch in range(epochs):  
+        epoch_loss = 0  
+        for batch_X, batch_y in dataloader:  
+            optimizer.zero_grad()  
+            outputs = model(batch_X)  
+            loss = criterion(outputs, batch_y)  
+            loss.backward()  
+            optimizer.step()  
+            epoch_loss += loss.item()  
+        
+        avg_loss = epoch_loss / len(dataloader)  
+        train_losses.append(avg_loss)  
+        
+        if (epoch + 1) % (epochs // 5) == 0:  
+            print(f'Epoch [{epoch+1}/{epochs}], Loss: {avg_loss:.6f}')  
+    
+    # 评估模型  
+    test_S = torch.linspace(80, 120, 100).reshape(-1, 1)  
+    test_t = torch.ones_like(test_S) * 0.5  
+    test_X = torch.cat((test_S, test_t), dim=1)  
+    
+    with torch.no_grad():  
+        predicted_prices = model(test_X).numpy()  
+    
+    theoretical_prices = calculate_bs_price(test_S.numpy(), 0.5)  
+    
+    return train_losses, predicted_prices, theoretical_prices, test_S.numpy()  
+
+def compare_hyperparameters():  
+    # 超参数组合  
+    param_combinations = {  
+        'Hidden Size': [16, 64],  
+        'Samples': [1000, 5000],  
+        'Batch Size': [32, 128],  
+        'Epochs': [500, 2000],  
+        'Learning Rate': [0.001, 0.01]  
+    }  
+    
+    # 创建所有组合  
+    keys = param_combinations.keys()  
+    combinations = list(itertools.product(*param_combinations.values()))  
+    
+    # 创建大图  
+    fig = plt.figure(figsize=(20, 10))  
+    
+    # 选择几个有代表性的组合展示  
+    selected_combinations = [  
+        (16, 1000, 32, 500, 0.001),   # 基准配置  
+        (64, 1000, 32, 500, 0.001),   # 增加隐藏层大小  
+        (16, 5000, 32, 500, 0.001),   # 增加样本量  
+        (16, 1000, 128, 500, 0.001),  # 增加批量大小  
+        (16, 1000, 32, 2000, 0.001),  # 增加训练轮数  
+        (16, 1000, 32, 500, 0.01)     # 增加学习率  
+    ]  
+    
+    for i, params in enumerate(selected_combinations):  
+        hidden_size, n_samples, batch_size, epochs, lr = params  
+        
+        # 训练模型  
+        losses, pred_prices, theo_prices, stock_prices = train_and_evaluate(  
+            hidden_size, n_samples, batch_size, epochs, lr  
+        )  
+        
+        # 绘制损失曲线  
+        plt.subplot(2, 3, i+1)  
+        plt.plot(losses, label='Training Loss')  
+        plt.plot(theo_prices, pred_prices, 'r--', label='Prediction vs Theory')  
+        plt.title(f'HS={hidden_size}, N={n_samples}\nBS={batch_size}, E={epochs}, LR={lr}')  
+        plt.xlabel('Epoch / Stock Price')  
+        plt.ylabel('Loss / Option Price')  
+        plt.legend()  
+        plt.grid(True)  
+    
+    plt.tight_layout()  
+    plt.show()  
+
+    # 绘制最终预测对比图  
+    plt.figure(figsize=(12, 6))  
+    for params in selected_combinations:  
+        hidden_size, n_samples, batch_size, epochs, lr = params  
+        losses, pred_prices, theo_prices, stock_prices = train_and_evaluate(  
+            hidden_size, n_samples, batch_size, epochs, lr  
+        )  
+        plt.plot(stock_prices, pred_prices, label=f'HS={hidden_size}, N={n_samples}, BS={batch_size}')  
+    
+    plt.plot(stock_prices, theo_prices, 'k--', label='Black-Scholes')  
+    plt.xlabel('Stock Price')  
+    plt.ylabel('Option Price')  
+    plt.title('Predictions vs Black-Scholes')  
+    plt.legend()  
+    plt.grid(True)  
+    plt.show()  
+
+if __name__ == "__main__":  
+    compare_hyperparameters()
