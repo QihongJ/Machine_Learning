@@ -1,0 +1,56 @@
+import matplotlib.pyplot as plt
+import pandas as pd
+
+# Define the timeline data for the 4-year PhD research proposal starting from Fall 2025
+data = {
+    'Task': [
+        'Literature collection and review', 'Identify existing gaps and meetings', 'Writing',
+        'Methodology development', 'Model construction and modification', 'Meeting and writing',
+        'Data collection and analysis', 'Refine methodology and modify model', 'Writing and meeting',
+        'Data re-collection and analysis', 'Model validation and example', 'Writing and Appendix',
+        'Discussion and future work', 'Review and revise thesis', 'Final Submission'
+    ],
+    'Start': [
+        '2025-09-01', '2025-11-01', '2026-02-01',
+        '2026-05-01', '2026-07-01', '2026-08-01',
+        '2026-11-01', '2027-02-01', '2027-06-01',
+        '2027-10-01', '2028-02-01', '2028-05-01',
+        '2028-12-01', '2029-03-01', '2029-05-01',
+    ],
+    'End': [
+        '2026-02-01', '2026-04-01', '2026-05-01',
+        '2026-12-01', '2027-01-01', '2027-02-01',
+        '2027-03-01', '2027-09-01', '2027-10-01',
+        '2028-03-01', '2028-07-01', '2028-12-01',
+        '2029-03-01', '2029-05-01', '2029-07-01',
+    ]
+}
+
+# Create a DataFrame
+df = pd.DataFrame(data)
+
+# Convert Start and End dates to datetime
+df['Start'] = pd.to_datetime(df['Start'])
+df['End'] = pd.to_datetime(df['End'])
+
+# Calculate the duration of each task
+df['Duration'] = df['End'] - df['Start']
+
+# Create the Gantt chart
+fig, ax = plt.subplots(figsize=(10, 6))
+
+# Plot each task as a bar
+for idx, row in df.iterrows():
+    ax.barh(row['Task'], row['Duration'].days, left=row['Start'])
+
+# Set labels and title
+ax.set_xlabel('Date')
+ax.set_ylabel('')
+ax.set_title('4-Year PhD Research Proposal Timeline (Starting Fall 2025)')
+
+# Format the x-axis to show dates
+ax.xaxis_date()
+
+# Display the Gantt chart
+plt.tight_layout()
+plt.show()
